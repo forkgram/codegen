@@ -146,6 +146,20 @@ Modifier GetModifier(const QString &name) {
 	return modifiers.value(name);
 }
 
+std::optional<QSize> GetSizeModifier(const QString &value) {
+	const auto parts = QStringView(value).split('x');
+	if (parts.size() != 2) {
+		return {};
+	}
+	auto okw = false, okh = false;
+	const auto width = parts[0].toInt(&okw);
+	const auto height = parts[1].toInt(&okh);
+	if (!okw || !okh || width <= 0 || height <= 0) {
+		return {};
+	}
+	return QSize(width, height);
+}
+
 ParsedFile::ParsedFile(
 	std::map<QString, std::shared_ptr<const structure::Module>> &includeCache,
 	const Options &options,
@@ -839,20 +853,23 @@ QString ParsedFile::readMonoIconFilename() {
 			auto filepath = pathAndModifiers[0];
 			auto modifiers = pathAndModifiers.mid(1);
 			for (const auto &modifierName : modifiers) {
-				if (!GetModifier(modifierName)) {
+				if (!GetModifier(modifierName)
+					&& !GetSizeModifier(modifierName)) {
 					logError(kErrorBadIconModifier) << "unknown modifier: " << modifierName.toStdString();
 					return QString();
 				}
 			}
 			for (auto &path : options_.includePaths) {
-				QFileInfo fileinfo(path + '/' + filepath + ".png");
-				if (fileinfo.exists()) {
+				QFileInfo png(path + '/' + filepath + ".png");
+				QFileInfo svg(path + '/' + filepath + ".svg");
+				if (png.exists() || svg.exists()) {
 					return path + '/' + fullpath;
 				}
 			}
 			for (auto &path : options_.includePaths) {
-				QFileInfo fileinfo(path + "/icons/" + filepath + ".png");
-				if (fileinfo.exists()) {
+				QFileInfo png(path + "/icons/" + filepath + ".png");
+				QFileInfo svg(path + "/icons/" + filepath + ".svg");
+				if (png.exists() || svg.exists()) {
 					return path + "/icons/" + fullpath;
 				}
 			}
