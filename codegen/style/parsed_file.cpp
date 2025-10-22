@@ -529,7 +529,79 @@ structure::Value ParsedFile::readPositiveValue() {
 }
 
 structure::Value ParsedFile::readNumericValue() {
-	if (auto value = readPositiveValue()) {
+	auto readNumericOrCopy = [this]() -> structure::Value {
+		if (auto value = readPositiveValue()) {
+			return value;
+		} else if (auto copy = readCopyValue()) {
+			auto type = copy.type().tag;
+			if (type == structure::TypeTag::Int
+				|| type == structure::TypeTag::Double
+				|| type == structure::TypeTag::Pixels) {
+				return copy;
+			} else {
+				file_.putBack();
+			}
+		}
+		return {};
+	};
+
+	if (auto value = readNumericOrCopy()) {
+		auto applyArithmetic = [&](auto operation, const char *name) {
+			if (auto rightValue = readNumericOrCopy()) {
+				if (value.type().tag != rightValue.type().tag) {
+					logErrorTypeMismatch()
+						<< "cannot "
+						<< name
+						<< " different types";
+					return false;
+				}
+				if (value.type().tag == structure::TypeTag::Pixels) {
+					value = {
+						structure::TypeTag::Pixels,
+						operation(value.Int(), rightValue.Int()),
+					};
+				} else if (value.type().tag == structure::TypeTag::Int) {
+					value = {
+						structure::TypeTag::Int,
+						operation(value.Int(), rightValue.Int()),
+					};
+				} else if (value.type().tag == structure::TypeTag::Double) {
+					value = {
+						structure::TypeTag::Double,
+						operation(value.Double(), rightValue.Double()),
+					};
+				} else {
+					logErrorTypeMismatch()
+						<< "cannot "
+						<< name
+						<< " this type";
+					return false;
+				}
+				return true;
+			}
+			logErrorUnexpectedToken()
+				<< "numeric value after '"
+				<< name
+				<< "'";
+			return false;
+		};
+		while (true) {
+			if (file_.getToken(BasicType::Plus)) {
+				if (!applyArithmetic(
+						[](auto a, auto b) { return a + b; },
+						"add")) {
+					return {};
+				}
+			} else if (file_.getToken(BasicType::Minus)) {
+				if (!applyArithmetic(
+						[](auto a, auto b) { return a - b; },
+						"subtract")) {
+					return {};
+				}
+			} else {
+				break;
+			}
+		}
 		return value;
 	} else if (auto minusToken = file_.getToken(BasicType::Minus)) {
 		if (auto positiveValue = readNumericValue()) {
@@ -778,7 +850,73 @@ structure::Value ParsedFile::readCopyValue() {
 	if (auto copyName = file_.getToken(BasicType::Name)) {
 		structure::FullName name = { tokenValue(copyName) };
 		if (auto variable = module_->findVariable(name)) {
-			return variable->value.makeCopy(variable->name);
+			auto result = variable->value;
+			while (file_.getToken(BasicType::Dot)) {
+				if (auto fieldName = file_.getToken(BasicType::Name)) {
+					auto fieldNameStr = tokenValue(fieldName);
+					if (result.type().tag == structure::TypeTag::Size) {
+						if (fieldNameStr == "width") {
+							return { structure::TypeTag::Pixels, result.Size().width };
+						} else if (fieldNameStr == "height") {
+							return { structure::TypeTag::Pixels, result.Size().height };
+						} else {
+							logError(kErrorUnknownField) << "size has only 'width' and 'height' fields";
+							return {};
+						}
+					} else if (result.type().tag == structure::TypeTag::Point) {
+						if (fieldNameStr == "x") {
+							return { structure::TypeTag::Pixels, result.Point().x };
+						} else if (fieldNameStr == "y") {
+							return { structure::TypeTag::Pixels, result.Point().y };
+						} else {
+							logError(kErrorUnknownField) << "point has only 'x' and 'y' fields";
+							return {};
+						}
+					} else if (result.type().tag == structure::TypeTag::Margins) {
+						if (fieldNameStr == "left") {
+							return { structure::TypeTag::Pixels, result.Margins().left };
+						} else if (fieldNameStr == "top") {
+							return { structure::TypeTag::Pixels, result.Margins().top };
+						} else if (fieldNameStr == "right") {
+							return { structure::TypeTag::Pixels, result.Margins().right };
+						} else if (fieldNameStr == "bottom") {
+							return { structure::TypeTag::Pixels, result.Margins().bottom };
+						} else if (fieldNameStr == "leftRight") {
+							return { structure::TypeTag::Pixels, result.Margins().left + result.Margins().right };
+						} else if (fieldNameStr == "topBottom") {
+							return { structure::TypeTag::Pixels, result.Margins().top + result.Margins().bottom };
+						} else {
+							logError(kErrorUnknownField) << "margins has only 'left', 'top', 'right' and 'bottom' fields";
+							return {};
+						}
+					}
+					auto *fields = result.Fields();
+					if (!fields) {
+						logError(kErrorTypeMismatch) << "'" << logFullName(name) << "' is not a struct";
+						return {};
+					}
+					structure::FullName fieldFullName = { fieldNameStr };
+					bool found = false;
+					for (const auto &field : *fields) {
+						if (field.variable.name == fieldFullName) {
+							result = field.variable.value;
+							found = true;
+							break;
+						}
+					}
+					if (!found) {
+						logError(kErrorUnknownField)
+							<< "field '"
+							<< fieldNameStr.toStdString()
+							<< "' not found";
+						return {};
+					}
+				} else {
+					logErrorUnexpectedToken() << "field name after '.'";
+					return {};
+				}
+			}
+			return result.makeCopy(variable->name);
 		}
 		file_.putBack();
 	}
